@@ -15,7 +15,7 @@ def is_instance_of(i, c, exclude=set()):
     elif isinstance(c, Not):
         return not is_instance_of(i, c, exclude)
     elif isinstance(c, OneOf):
-        return all(i == x for x in c.instances)
+        return any(i == x for x in c.instances)
     elif isinstance(c, Restriction):
         i_r = getattr(i, c.property.name)
         if i_r:
@@ -128,3 +128,8 @@ def pretty(x):
     else:
         return ','.join(pretty(cc) for cc in x.Classes)
 
+
+def define_as(A, name='temp', bases=(Thing,)):
+    calculator[name] = types.new_class(name, bases=bases)
+    calculator[name].equivalent_to.append(A)
+    

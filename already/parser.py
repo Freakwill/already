@@ -11,8 +11,8 @@ An atomic concepts are concepts
 
 i:A, A=A, A<=A, A>=A, A<A, A>A are formulas
 
-let i:A, let A::B is declarations
-let A:=B is a definition
+! i:A, ! A::B is declarations
+! A:=B is a definition
 """
 
 import pyparsing as pp
@@ -24,32 +24,48 @@ concept = pp.Forward()
 atomic_concept = pp.pyparsing_common.identifier('content')
 atomic_concept.addParseAction(ConceptAction)
 
-# type_check = pp.Suppress(':') + atomic_concept('content')
+type_check = pp.Suppress(':') + atomic_concept('type')
 individul = pp.pyparsing_common.identifier('content')
 individul.addParseAction(IndividualAction)
 
-atomic_concept_ = atomic_concept | pp.Suppress('{') + pp.delimitedList(individul, ',') + pp.Suppress('}')
+individual_set = pp.Suppress('{') + pp.delimitedList(individul, ',') + pp.Suppress('}')
+atomic_concept_ = atomic_concept | individual_set.addParseAction(IndividualSetAction)
 
 atomic_relation = pp.pyparsing_common.identifier
-quantifier = (pp.Keyword('some') | pp.Keyword('only') | pp.Literal('>=') + pp.pyparsing_common.integer
-| pp.Literal('<=')+pp.pyparsing_common.integer | pp.Literal('=')+pp.pyparsing_common.integer)
-restriction = quantifier + atomic_relation + pp.Suppress('.')
+quantifier = ((pp.Keyword('more') | pp.Keyword('less') | pp.Keyword('equal'))+pp.pyparsing_common.integer) \
+| pp.Keyword('some') | pp.Keyword('only')
+quantifier.addParseAction(QuantifierAction)
+restriction = quantifier('quantifier') + atomic_relation('relation') + pp.Suppress('.')
 
-individul_variable = '$' + individul
-concept_variable = '$' + atomic_concept
+r = restriction.parseString('only r. A')[0]
+
+individul_variable = pp.Combine('$' + individul)('name') + pp.Optional(type_check)
+concept_variable = pp.Combine('$' + atomic_concept)('name') + pp.Optional(type_check)
+
+individul_variable.addParseAction(IndividualVariableAction)
 
 opList = [('~', 1, pp.opAssoc.RIGHT, NegationAction), 
 (restriction, 1, pp.opAssoc.RIGHT, RestrictionAction),
 ('&', 2, pp.opAssoc.LEFT, AndAction), ('|', 2, pp.opAssoc.LEFT, OrAction), ('^', 2, pp.opAssoc.LEFT, XorAction)]
 concept = pp.infixNotation(atomic_concept_, opList)
 
-declaration = pp.Keyword('let').suppress() + individul + pp.Suppress(':') + concept
-declaration.addParseAction(DeclarationAction)
-concept_declaration = pp.Keyword('let').suppress() + concept + pp.Suppress('::') + concept
+concept_tuple = pp.delimitedList(concept, ',')('concepts')
+concept_tuple.addParseAction(ConceptTupleAction)
+
+individual_declaration = pp.Suppress('!') + individul + pp.Suppress(':') + concept_tuple
+individual_declaration.addParseAction(DeclarationAction)
+concept_declaration = pp.Suppress('!') + concept + pp.Suppress('::') + concept_tuple
 concept_declaration.addParseAction(ConceptDeclarationAction)
-definition = pp.Keyword('let').suppress() + concept + pp.Suppress(':=') + concept
+definition = pp.Suppress('!') + concept + pp.Suppress(':=') + concept
 definition.addParseAction(DefinitionAction) 
 
+mapping_formula = concept + '->' + concept
+mapping_formula.addParseAction(MappingFormulaAction)
+relation_tuple = (atomic_relation | mapping_formula)
+relation_declaration = pp.Suppress('!') + atomic_relation + pp.Suppress('::') + relation_tuple
+relation_declaration.addParseAction(RelationDeclarationAction)
+
+declaration = concept_declaration ^ definition ^ individual_declaration
 
 containing_formula = individul + ':' + concept
 containing_formula.addParseAction(ContainingFormulaAction)
@@ -58,16 +74,15 @@ comparison_formula = concept + compare + concept
 comparison_formula.addParseAction(FormulaAction)
 formula = comparison_formula ^ containing_formula
 
-statement = concept_declaration ^ definition ^ declaration ^ formula
 
-question = concept + compare + concept + pp.Suppress('?')
-sentence = question ^ formula
+statement = declaration ^ formula
+
+# question = concept + compare + concept + pp.Suppress('?')
+# sentence = question ^ formula
 
 statement_sequence = pp.delimitedList(statement, ';')
 statement_sequence.addParseAction(StatementSequenceAction)
 
-# a=concept.parseString('B | C & D')
-# print(a[0].eval(calc))
 
 def parse(s:str):
     return statement_sequence.parseString(s)[0]
@@ -80,6 +95,11 @@ calc.set_constant('Thing', Thing)
 onto = get_ontology("http://test.org/onto.owl")
 
 with onto:
-    r = parse('let Thing:: Thing; let i: Thing; let B :: Thing; let A :: Thing;let j: B; i:B; A | B<= Thing;')
+    r = parse("""
+        ! I:: Thing;
+        ! J:: I;
+        ! i: I;
+        ! R :: I -> J;
+        """)
     print(r.eval(calc))
     print(calc.memory)

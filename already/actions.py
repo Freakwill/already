@@ -4,6 +4,7 @@
 import pyparsing_ext as ppx
 from owlready2 import *
 from keywords import *
+from utils import *
 
 
 class AtomAction(ppx.BaseAction):
@@ -21,9 +22,6 @@ class AtomAction(ppx.BaseAction):
     def eval(self, calculator):
         return calculator[self.content]
 
-    def update(self, calculator, x):
-        return calculator.update({self.content:x})
-
     def __radd__(self, s):
         return s + self.content
 
@@ -36,14 +34,19 @@ class AtomAction(ppx.BaseAction):
 
 
 class VariableAction(AtomAction):
+    names = ('name', 'type')
 
-    value = ''
+
+class IndividualVariableAction(VariableAction):
 
     def eval(self, calculator):
-        if 'type' in self:
-            return f'x:{self.type}'
-        else:
-            return 'x'
+        return lambda x: self.eval(calculator | {self.name:x})
+
+class ConceptVariableAction(VariableAction):
+
+    def eval(self, calculator):
+        return lambda X: self.eval(calculator | {self.name:X})
+
 
 class ConstantAction(AtomAction):
     def __eq__(self, other):
@@ -59,7 +62,16 @@ class IndividualAction(ConstantAction):
             raise Exception('A name for individual should start with lower case letters.')
 
     def toConcept(self):
-        return OneOf({self.eval(calculator)})
+        return OneOf([{self.eval(calculator)}])
+
+
+class IndividualSetAction(ConstantAction):
+    def __init__(self, *args, **kwargs):
+        super(IndividualSetAction, self).__init__(*args, **kwargs)
+        self.individuals = self.tokens[:]
+
+    def eval(self, calculator):
+        return OneOf([i.eval(calculator) for i in self.individuals])
 
 class VariableConceptAction(AtomAction):
     names = ('type',)
@@ -84,14 +96,67 @@ class RelationAction(ConstantAction):
     def create(self, calculator, *bases):
         calculator.update({self.content: types.new_class(self.content, bases=bases)})
 
+class QuantifierAction(ppx.BaseAction):
+    def __init__(self, *args, **kwargs):
+        super(QuantifierAction, self).__init__(*args, **kwargs)
+        self.content = self.tokens[0]
+        if len(self.tokens)==2:
+            self.num = self.tokens[1]
+
+    def __call__(self, r):
+        if self.content=='some':
+            return r.some
+        elif self.content=='only':
+            return r.only
+        elif self.content == 'more':
+            return lambda A: r.min(self.num, A)
+        elif self.content == 'less':
+            return lambda A: r.max(self.num, A)
+        elif self.content == 'exact':
+            return lambda A: r.exactly(self.num, A)
+
+    def __eq__(self, other):
+        if isinstance(other, QuantifierAction):
+            return self.content == other.content
+        elif isinstance(other, str):
+            return self.content == other
+        else:
+            raise TypeError(f'"{other}" should be an instance of QuantifierAction or str.')
+
 
 class RestrictionAction(ppx.RightUnaryOperatorAction):
-    pass
+    names = ('quantifier', 'relation')
+
+    def eval(self, calculator):
+        return self.quantifier(self.relation)(self.operand)
+
+    def __repr__(self):
+        if self.quantifier == 'some':
+            s = '∃'
+        elif self.quantifier == 'only':
+            s = '∀'
+        elif self.quantifier == 'more':
+            s = 'Q>={self.num}'
+        elif self.quantifier == 'less':
+            s = 'Q<={self.num}'
+        elif self.quantifier == 'exact':
+            s = 'Q={self.num}'
+        s += f' {self.relation}.'
+        arg = self.operand
+        s += f'{arg:p}' if isinstance(arg, (AndAction, OrAction)) else f'{arg}'
+        return s
+
 
 
 class NegationAction(ppx.RightUnaryOperatorAction):
     def eval(self, calculator):
         return calculator(self.function)(self.operand)
+
+    def __repr__(self):
+        s = '~'
+        arg = self.operand
+        s += f'{arg:p}' if isinstance(arg, (AndAction, OrAction)) else f'{arg}'
+        return s
 
 
 class BinaryOperatorAction(ppx.BinaryOperatorAction):
@@ -101,7 +166,8 @@ class BinaryOperatorAction(ppx.BinaryOperatorAction):
 
 
 class AndAction(BinaryOperatorAction):
-    pass
+    def __repr__(self):
+        return ' & '.join(f'{arg:p}' if isinstance(arg, OrAction) else f'{arg}' for arg in self.args)
 
 
 class OrAction(BinaryOperatorAction):
@@ -111,12 +177,22 @@ class OrAction(BinaryOperatorAction):
 class XorAction(BinaryOperatorAction):
     pass
 
+class ConceptTupleAction(ppx.BaseAction):
+    names = ('concepts',)
+    def __init__(self, instring='', loc=0, tokens=[]):
+        super(ConceptTupleAction, self).__init__(instring, loc, tokens)
+        self.concepts = self.tokens
+    
+    def eval(self, calculator):
+        return (tuple([c.eval(calculator) for c in self.concepts if isinstance(c, ConceptAction)]),
+        tuple([c.eval(calculator) for c in self.concepts if not isinstance(c, ConceptAction)]))
+
 
 class DeclarationAction(ppx.BaseAction):
     def __init__(self, instring='', loc=0, tokens=[]):
         super(DeclarationAction, self).__init__(instring, loc, tokens)
-        self.lhs, self.concept = self.tokens
-    
+        self.lhs, self.base_concepts = self.tokens
+
     @property
     def lhs_name(self):
         # left hand side of declaration
@@ -126,30 +202,40 @@ class DeclarationAction(ppx.BaseAction):
         self.create(calculator)
 
     def create(self, calculator, klass=Thing):
-        concept = self.concept.eval(calculator)
+        bases, others = self.base_concepts.eval(calculator)
+
         indiviudal_name = self.lhs_name
-        if isinstance(self.concept, ConceptAction):
-            calculator.update({indiviudal_name: concept(indiviudal_name)})
-        else:
-            calculator.update({indiviudal_name: klass(indiviudal_name)})
-            calculator[indiviudal_name].is_a.append(concept)
+        if bases:
+            concept = bases[0]
+            calculator[indiviudal_name] = concept(indiviudal_name)
+            for concept in bases:
+                calculator[indiviudal_name].is_a.append(concept)
+        for other in others:
+            calculator[indiviudal_name].is_a.append(other)
 
 
 class ConceptDeclarationAction(DeclarationAction):
 
     def create(self, calculator, klass=Thing):
-
-        concept = self.concept.eval(calculator)
+        bases, others = self.base_concepts.eval(calculator)
         concept_name = self.lhs_name
-        if isinstance(self.concept, ConceptAction):
-            bases = (concept,)
-            calculator.update[concept_name] = types.new_class(concept_name, bases=bases)
-            calculator[concept_name].is_a.append(concept)
-        else:
+        if not bases:
             bases = (klass,)
-            calculator.update[concept_name] = types.new_class(concept_name, bases=bases)
-            calculator[concept_name].is_a.append(concept)
+        calculator[concept_name] = types.new_class(concept_name, bases=bases)
+        for other in others:
+            calculator[concept_name].is_a.append(other)
 
+
+class RelationDeclarationAction(DeclarationAction):
+
+    def create(self, calculator, klass=ObjectProperty):
+        bases, others = self.base_concepts.eval(calculator)
+        relation_name = self.lhs_name
+        if not bases:
+            bases = (klass,)
+        calculator[relation_name] = types.new_class(concept_name, bases=bases)
+        for other in others:
+            calculator[relation_name].is_a.append(other)
 
 class DefinitionAction(DeclarationAction):
 
@@ -157,11 +243,11 @@ class DefinitionAction(DeclarationAction):
         concept = self.concept.eval(calculator)
         concept_name = self.lhs_name
         if isinstance(self.concept, ConceptAction):
-            calculator.update[self.concept_name] = self.concept
+            calculator[self.concept_name] = self.concept
         else:
             bases = (klass,)
-            calculator.update[self.concept_name] = types.new_class(self.concept_name, bases=bases)
-            calculator[self.indiviudal_name].equivalent_to.append(concept)
+            calculator[self.concept_name] = types.new_class(self.concept_name, bases=bases)
+            calculator[self.concept_name].equivalent_to.append(concept)
 
 
 class FormulaAction(ppx.BinaryOperatorAction):
@@ -183,7 +269,7 @@ class ContainingFormulaAction(FormulaAction):
     def eval(self, calculator):
         individual = self.individual.eval(calculator)
         concept = self.concept.eval(calculator)
-        return concept in individual.INDIRECT_is_a
+        return is_instance_of(individual, concept)
 
 class ComparisonFormulaAction(FormulaAction):
     def __init__(self, instring='', loc=0, tokens=[]):
@@ -204,3 +290,7 @@ class StatementSequenceAction(ppx.BaseAction):
         return ret
 
 
+class MappingFormulaAction(FormulaAction):
+    def eval(self, calculator):
+        left, right = self.args
+        return left >> right

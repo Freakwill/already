@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""
+Design Class Diagram
+[:Semantic Calculator]  <|---- * [dict[str:Owlready object]]
+"""
+
+import types
+
 anaphora = '@'
 
 class BaseCalculator:
     """Base Class for Semantic Calculator
+
+    It is recommanded to implement `__call__` in sub classes
 
     memory: assignment for variables
     dictionary: intereption for constants
@@ -20,6 +29,9 @@ class BaseCalculator:
     @property
     def dictionary(self):
         return self.__dictionary
+
+    def copy(self):
+        return self.__class__(memory=self.memory.copy(), dictionary=self.dictionary)
 
     def set_constant(self, k, v):
         self.__dictionary[k] = v
@@ -53,6 +65,12 @@ class BaseCalculator:
     def __contains__(self, x):
         return x in self.memory or x in self.dictionary
 
+    def __or__(self, d):
+        cpy = self.copy()
+        for k, v in d.items():
+            cpy[k] = v
+        return cpy
+
 
 from utils import *
 
@@ -79,3 +97,6 @@ class OwlreadyCalculator(BaseCalculator):
             return self[x]
         else:
             return globals()[x]
+
+    def create_concept(name, *args, **kwargs):
+        self[name] = types.new_class(name, *args, **kwargs)
